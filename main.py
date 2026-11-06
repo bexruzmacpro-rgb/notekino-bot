@@ -4,6 +4,8 @@ import re
 import sqlite3
 import logging
 
+from datetime import datetime, timedelta, timezone
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -15,6 +17,8 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = os.getenv("DATABASE_PATH", "notekino.db")
+
+ADMIN_USERNAME = "bekxruzdeeee"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,11 +34,72 @@ def init_db():
             )
         """)
 
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_seen TEXT NOT NULL
+            )
+        """)
+
+
+def register_user(update):
+    user = update.effective_user
+    if not user:
+        return
+
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("""
+            INSERT OR IGNORE INTO users
+            (user_id, username, first_seen)
+            VALUES (?, ?, ?)
+        """, (
+            user.id,
+            user.username,
+            datetime.now(timezone.utc).isoformat()
+        ))
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_user(update)
+
     await update.message.reply_text(
         "🎬 Notekino botiga xush kelibsiz!\n\n"
         "🔎 Kino kodini yuboring va filmni oling."
+    )
+
+
+async def stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    if not user or (user.username or "").lower() != ADMIN_USERNAME.lower():
+        await update.message.reply_text("⛔ Siz admin emassiz!")
+        return
+
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    week_ago = (now - timedelta(days=7)).isoformat()
+
+    with sqlite3.connect(DB_PATH) as db:
+        total = db.execute(
+            "SELECT COUNT(*) FROM users"
+        ).fetchone()[0]
+
+        today_count = db.execute(
+            "SELECT COUNT(*) FROM users WHERE substr(first_seen, 1, 10) = ?",
+            (today,)
+        ).fetchone()[0]
+
+        week_count = db.execute(
+            "SELECT COUNT(*) FROM users WHERE first_seen >= ?",
+            (week_ago,)
+        ).fetchone()[0]
+
+    await update.message.reply_text(
+        "📊 NOTEKINO BOT STATISTIKASI\n\n"
+        f"👥 Jami foydalanuvchilar: {total}\n"
+        f"🆕 Bugun qo‘shilganlar: {today_count}\n"
+        f"📅 Oxirgi 7 kunda: {week_count}"
     )
 
 
@@ -61,6 +126,8 @@ async def save_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def find_movie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    register_user(update)
+
     code = update.message.text.strip().upper()
 
     if not re.fullmatch(r"[A-Z0-9_-]+", code):
@@ -103,9 +170,12 @@ def main():
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stat", stat))
+
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL, save_movie)
     )
+
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND,
